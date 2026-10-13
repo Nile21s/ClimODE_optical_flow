@@ -17,7 +17,7 @@ import argparse
 import sys
 import time
 import torch
-torch.manual_seed(42)
+torch.manual_seed(789)
 torch.cuda.empty_cache() 
 import torch.optim as optim
 import random
@@ -25,9 +25,15 @@ import logging
 logging.propagate = False 
 logging.getLogger().setLevel(logging.ERROR)
 import sys
+import time
 
-set_seed(42)
+
+start_time = time.perf_counter()
+
+
+set_seed(789)
 cwd = os.getcwd()
+data_dir = '/mnt/nils'
 #data_path = {'z500':str(cwd) + '/era5_data/geopotential_500/*.nc','t850':str(cwd) + '/era5_data/temperature_850/*.nc'}
 SOLVERS = ["dopri8","dopri5", "bdf", "rk4", "midpoint", 'adams', 'explicit_adams', 'fixed_adams',"adaptive_heun","euler"]
 parser = argparse.ArgumentParser('ClimODE')
@@ -44,15 +50,16 @@ parser.add_argument('--lr', type=float, default=0.0005)
 parser.add_argument('--weight_decay', type=float, default=1e-5)
 args = parser.parse_args()
 
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+device = torch.device('cuda:1' if torch.cuda.is_available() else 'cpu')
+print(device)
 
 
 train_time_scale= slice('2006','2016')
 val_time_scale = slice('2016','2016')
 test_time_scale = slice('2017','2018')
 
-paths_to_data = [str(cwd) + '/era5_data/geopotential_500/*.nc',str(cwd) + '/era5_data/temperature_850/*.nc',str(cwd) + '/era5_data/2m_temperature/*.nc',str(cwd) + '/era5_data/10m_u_component_of_wind/*.nc',str(cwd) + '/era5_data/10m_v_component_of_wind/*.nc']
-const_info_path = [str(cwd) +  '/era5_data/constants/constants_5.625deg.nc']
+paths_to_data = [str(data_dir) + '/era5_data/geopotential_500/*.nc',str(data_dir) + '/era5_data/temperature_850/*.nc',str(data_dir) + '/era5_data/2m_temperature/*.nc',str(data_dir) + '/era5_data/10m_u_component_of_wind/*.nc',str(data_dir) + '/era5_data/10m_v_component_of_wind/*.nc']
+const_info_path = [str(data_dir) +  '/era5_data/constants/constants_5.625deg.nc']
 levels = ["z","t","t2m","u10","v10"]
 paths_to_data = paths_to_data[0:5]
 levels = levels[0:5]
@@ -102,14 +109,23 @@ train_best_loss = float('inf')
 best_epoch = float('inf')
 print("############################ Data is loaded, Fitting the velocity #########################")
 
-get_gauss_kernel((32,64),lat,lon)
-kernel = torch.from_numpy(np.load(str(cwd) +"/kernel.npy"))
-#breakpoint()
-fit_velocity(time_idx,time_loader,Final_train_data,Train_loader,torch.device('cpu'),num_years,paths_to_data,args.scale,H,W,types='train_10year_2day_mm',vel_model=Optim_velocity,kernel=kernel,lat=lat,lon=lon)
-fit_velocity(time_idx,time_loader,Final_val_data,Val_loader,torch.device('cpu'),1,paths_to_data,args.scale,H,W,types='val_10year_2day_mm',vel_model=Optim_velocity,kernel=kernel,lat=lat,lon=lon)
-fit_velocity(time_idx,time_loader,Final_test_data,Test_loader,torch.device('cpu'),2,paths_to_data,args.scale,H,W,types='test_10year_2day_mm',vel_model=Optim_velocity,kernel=kernel,lat=lat,lon=lon)
+# get_gauss_kernel((32,64),lat,lon)
+kernel = torch.from_numpy(np.load(str(cwd) + "/kernel.npy"))
 
-vel_train,vel_val = load_velocity(['train_10year_2day_mm','val_10year_2day_mm'])
+# fit_velocity(time_idx,time_loader,Final_train_data,Train_loader,torch.device('cpu'),num_years,paths_to_data,args.scale,H,W,types='train_10year_2day_mm',vel_model=Optim_velocity,kernel=kernel,lat=lat,lon=lon,s_src=C_SRC)
+# fit_velocity(time_idx,time_loader,Final_val_data,Val_loader,torch.device('cpu'),1,paths_to_data,args.scale,H,W,types='val_10year_2day_mm',vel_model=Optim_velocity,kernel=kernel,lat=lat,lon=lon,s_src=C_SRC)
+# fit_velocity(time_idx,time_loader,Final_test_data,Test_loader,torch.device('cpu'),2,paths_to_data,args.scale,H,W,types='test_10year_2day_mm',vel_model=Optim_velocity,kernel=kernel,lat=lat,lon=lon,s_src=C_SRC)
+
+"""
+vel_train, vel_val = load_velocity([
+    'initial_velocities/optical_flow_vel_proesmans/test/train_10year_2day_mm_proesmans',
+    'initial_velocities/optical_flow_vel_proesmans/test/val_10year_2day_mm_proesmans',
+])
+"""
+
+vel_train = torch.from_numpy(np.zeros((183, 10, 2, 5, 32, 64)))
+vel_val = torch.from_numpy(np.zeros((183, 1, 2, 5, 32, 64)))
+
 print("############################ Velocity loaded, Model starts to train #########################")
 print(model)
 print("####################### Total Parameters",param ,"################################")
@@ -118,8 +134,7 @@ for epoch in range(args.niters):
     total_train_loss = 0
     val_loss = 0
     test_loss = 0
-    #RMSD = []
-    #breakpoint()
+
     if epoch == 0:
         var_coeff = 0.001
     else:
@@ -131,14 +146,14 @@ for epoch in range(args.niters):
         past_sample = vel_train[entry].view(num_years,2*len(paths_to_data)*(args.scale+1),H,W).to(device)
         model.update_param([past_sample,const_channels_info.to(device),lat_map.to(device),lon_map.to(device)])
         t = time_steps.float().to(device).flatten()
-        mean,std,_ = model(t,data)
+        mean, std, _ = model(t,data)
         loss = nll(mean,std,batch.float().to(device),lat,var_coeff)
         l2_lambda = 0.001
         l2_norm = sum(p.pow(2.0).sum()
                 for p in model.parameters())
         loss = loss + l2_lambda * l2_norm
         loss.backward()
-        optimizer.step()    
+        optimizer.step()
         print("Loss for batch is ",loss.item())
         if torch.isnan(loss) : 
             print("Quitting due to Nan loss")
@@ -164,10 +179,15 @@ for epoch in range(args.niters):
 
     print("|Iter ",epoch," | Total Val Loss ", val_loss,"|")
 
+    end_time = time.perf_counter()
+    duration = start_time - end_time
+    hours_needed = int(duration // 3600)
+    minutes_needed = int((duration % 3600) // 60)
+
+    print(f'Total time: {hours_needed}h {minutes_needed}m.')
 
     if val_loss < best_loss:
         best_loss = val_loss
         best_epoch = epoch
-        torch.save(model,str(cwd) + "/Models/" + "ClimODE_global_"+args.solver+"_"+str(args.spectral)+"_model_" + str(epoch) + ".pt")
-
+        torch.save(model,str(cwd) + "/Models/Zero_models/Zero_model_789/" + "ClimODE_global_"+args.solver+"_"+str(args.spectral)+"_model_" + str(epoch) + ".pt")
 

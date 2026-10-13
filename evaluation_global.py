@@ -36,12 +36,13 @@ args = parser.parse_args()
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 cwd = os.getcwd()
+data_dir = ''
 train_time_scale= slice('2006','2016')
 val_time_scale = slice('2016','2016')
 test_time_scale = slice('2017','2018')
 
-paths_to_data = [str(cwd) + '/era5_data/geopotential_500/*.nc',str(cwd) + '/era5_data/temperature_850/*.nc',str(cwd) + '/era5_data/2m_temperature/*.nc',str(cwd) + '/era5_data/10m_u_component_of_wind/*.nc',str(cwd) + '/era5_data/10m_v_component_of_wind/*.nc',str(cwd) + '/era5_data/v_component_of_wind/*.nc',str(cwd) + '/era5_data/u_component_of_wind/*.nc',str(cwd) + '/era5_data/relative_humidity/*.nc',str(cwd) + '/era5_data/specific_humidity/*.nc']
-const_info_path = [str(cwd) +  '/era5_data/constants/constants_5.625deg.nc']
+paths_to_data = [str(data_dir) + '/era5_data/geopotential_500/*.nc',str(data_dir) + '/era5_data/temperature_850/*.nc',str(data_dir) + '/era5_data/2m_temperature/*.nc',str(data_dir) + '/era5_data/10m_u_component_of_wind/*.nc',str(data_dir) + '/era5_data/10m_v_component_of_wind/*.nc',str(data_dir) + '/era5_data/v_component_of_wind/*.nc',str(data_dir) + '/era5_data/u_component_of_wind/*.nc',str(data_dir) + '/era5_data/relative_humidity/*.nc',str(data_dir) + '/era5_data/specific_humidity/*.nc']
+const_info_path = [str(data_dir) +  '/era5_data/constants/constants_5.625deg.nc']
 levels = ["z","t","t2m","u10","v10"]
 paths_to_data = paths_to_data[0:5]
 levels = levels[0:5]
@@ -84,9 +85,13 @@ num_years  = 2
 Final_train_data = 0
 Final_val_data = 0
 
-vel_test= torch.from_numpy(np.load('### Test velocity here'))
+vel_test= torch.from_numpy(np.load('test_10year_2day_mm_vel.npy'))
 
-model = torch.load(str(cwd) + "checkpoints/ClimODE_global.pt",map_location=torch.device('cpu')).to(device)
+model = torch.load(
+    str(cwd) + "/Models/ClimODE_global_euler_0_model_299.pt",
+    map_location=torch.device('cpu'),
+    weights_only=False,
+).to(device)
 print(model)
 
 org_time = 1
@@ -118,9 +123,42 @@ for entry,(time_steps,batch) in enumerate(zip(time_loader,Test_loader)):
                     Lead_CRPS[lev][t_step-1].append(evaluate_crps[idx])
 
 
-for t_idx in range(8):
+for t_idx in range(7):
     for idx, lev in enumerate(levels):
         print("Lead Time ",(t_idx+1)*6, "hours ","| Observable ",lev, "| Mean RMSD ", np.mean(Lead_RMSD_arr[lev][t_idx]), "| Std RMSD ", np.std(Lead_RMSD_arr[lev][t_idx]))
         print("Lead Time ",(t_idx+1)*6, "hours ","| Observable ",lev, "| Mean ACC ", np.mean(Lead_ACC[lev][t_idx]), "| Std ACC ", np.std(Lead_ACC[lev][t_idx]))
         print("Lead Time ",(t_idx+1)*6, "hours ","| Observable ",lev, "| Mean CRPS ", np.mean(Lead_CRPS[lev][t_idx]), "| Std CRPS ", np.std(Lead_CRPS[lev][t_idx]))
         
+
+output_file = "forecast_metrics.txt"
+
+with open(output_file, "w", encoding="utf-8") as f:
+    for t_idx in range(7):
+        for idx, lev in enumerate(levels):
+            line1 = (
+                f"Lead Time {(t_idx+1)*6} hours | Observable {lev} | "
+                f"Mean RMSD {np.mean(Lead_RMSD_arr[lev][t_idx])} | "
+                f"Std RMSD {np.std(Lead_RMSD_arr[lev][t_idx])}"
+            )
+
+            line2 = (
+                f"Lead Time {(t_idx+1)*6} hours | Observable {lev} | "
+                f"Mean ACC {np.mean(Lead_ACC[lev][t_idx])} | "
+                f"Std ACC {np.std(Lead_ACC[lev][t_idx])}"
+            )
+
+            line3 = (
+                f"Lead Time {(t_idx+1)*6} hours | Observable {lev} | "
+                f"Mean CRPS {np.mean(Lead_CRPS[lev][t_idx])} | "
+                f"Std CRPS {np.std(Lead_CRPS[lev][t_idx])}"
+            )
+
+            print(line1)
+            print(line2)
+            print(line3)
+
+            f.write(line1 + "\n")
+            f.write(line2 + "\n")
+            f.write(line3 + "\n\n")
+
+print(f"Ergebnisse wurden in '{output_file}' gespeichert.")

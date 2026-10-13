@@ -49,6 +49,24 @@ BOUNDARIES = {
 }
 
 
+def solar_S(time_step, lat, lon):
+    """
+    Analytische Einstrahlung S = max(0, cos(Zenitwinkel)) fuer einen
+    6-Stunden-Zeitindex. Rueckgabe: Tensor [H,W].
+
+    Identisch zur Formel in Climate_encoder_free_uncertain.pde().
+    """
+    hours = float(time_step) * 6.0
+    doy   = np.floor(hours / 24.0) % 365.0 + 1.0
+    decl  = 0.409 * np.sin(2 * np.pi * (doy - 81.0) / 365.0)
+    LON, LAT = np.meshgrid(np.deg2rad(np.asarray(lon, dtype=float)),
+                           np.deg2rad(np.asarray(lat, dtype=float)))
+    h = np.pi * ((hours % 24.0) - 12.0) / 12.0 + LON
+    S = np.maximum(np.sin(LAT) * np.sin(decl)
+                   + np.cos(LAT) * np.cos(decl) * np.cos(h), 0.0)
+    return torch.from_numpy(S).float()
+
+
 def set_seed(seed: int = 42) -> None:
     np.random.seed(seed)
     random.seed(seed)
@@ -66,7 +84,6 @@ def count_parameters(model):
     return sum(p.numel() for p in model.parameters() if p.requires_grad)
 
 
-
 def get_batched(train_times,data_train_final,lev):
     for idx,year in enumerate(train_times):
         data_per_year = data_train_final.sel(time=slice(str(year),str(year))).load()
@@ -82,26 +99,24 @@ def get_batched(train_times,data_train_final,lev):
     return train_data
 
 
-
-
 def get_train_test_data_without_scales_batched(data_path,train_time_scale,val_time_scale,test_time_scale,lev,spectral):
     data = xr.open_mfdataset(data_path, combine='by_coords')
     #data = data.isel(lat=slice(None, None, -1))
     if lev in ["v","u","r","q","tisr"]:
         data = data.sel(level=500)
-    data = data.resample(time="6H").nearest(tolerance="1H") # Setting data to be 6-hour cycles
+    data = data.resample(time="6h").nearest(tolerance="1h") # Setting data to be 6-hour cycles
     data_train = data.sel(time=train_time_scale).load()
     data_val = data.sel(time=val_time_scale).load()
     data_test = data.sel(time=test_time_scale).load()
-    data_global = data.sel(time=slice('2006','2018')).load()
+    # data_global = data.sel(time=slice('2006','2018')).load()
 
-    max_val = data_global.max()[lev].values.tolist()
-    min_val = data_global.min()[lev].values.tolist()
+    max_val = data_train.max()[lev].values.tolist()
+    min_val = data_train.min()[lev].values.tolist()
 
 
-    data_train_final = (data_train - min_val)/ (max_val - min_val)
-    data_val_final = (data_val - min_val)/ (max_val - min_val)
-    data_test_final = (data_test - min_val)/ (max_val - min_val)
+    data_train_final = (data_train - min_val) / (max_val - min_val)
+    data_val_final = (data_val - min_val) / (max_val - min_val)
+    data_test_final = (data_test - min_val) / (max_val - min_val)
 
     time_vals = data_test_final.time.values
     train_times = [i for i in range(2006,2016)]
@@ -379,7 +394,7 @@ def get_gauss_kernel_region(shape,lat,lon,region):
 
 
 
-def optimize_vel(num,data,delta_u,vel_model,kernel,H,W,steps=200):
+def optimize_vel(device,num,data,delta_u,vel_model,kernel,H,W,steps=200):
     model = vel_model(num,H,W)
     optimizer = optim.Adam(model.parameters(),lr=2)
     best_loss = float('inf')
@@ -393,7 +408,7 @@ def optimize_vel(num,data,delta_u,vel_model,kernel,H,W,steps=200):
         v_x_kernel  = torch.matmul(kernel_v_x.transpose(2,3), kernel_expand)
         final_x = torch.matmul(v_x_kernel, kernel_v_x).mean()
         v_y_kernel  = torch.matmul(kernel_v_y.transpose(2,3), kernel_expand)
-        final_y = torch.matmul(v_y_kernel, kernel_v_y).mean() 
+        final_y = torch.matmul(v_y_kernel, kernel_v_y).mean()
         vel_loss = nn.MSELoss()(delta_u,out.squeeze(dim=1)) + 0.0000001*(final_x + final_y)
         loss_step.append(vel_loss.item())
         if vel_loss.item() < best_loss:
@@ -407,8 +422,7 @@ def optimize_vel(num,data,delta_u,vel_model,kernel,H,W,steps=200):
     return final_vx,final_vy,loss_step,final_out
 
 
-
-def fit_velocity(time_idx,time_loader,Final_train_data,data_loader,device,num_years,paths_to_data,scale,H,W,types,vel_model,kernel,lat,lon):
+def fit_velocity(time_idx,time_loader,Final_train_data,data_loader,device,num_years,paths_to_data,scale,H,W,types,vel_model,kernel,lat,lon,seed):
     num =0
     cwd = os.getcwd() 
     for idx_steps,time_steps,batch in zip(time_idx,time_loader,data_loader):
@@ -421,7 +435,7 @@ def fit_velocity(time_idx,time_loader,Final_train_data,data_loader,device,num_ye
         past_sample = [Final_train_data[j].view(num_years,-1,len(paths_to_data)*(scale+1),H,W) for j in pst_idx]
         past_sample = torch.stack(past_sample).view(num_years,3,-1,H,W).to(device)
         delta_u = get_delta_u(past_sample,past_time)
-        v_x,v_y,loss_terms,out = optimize_vel(num_years,data,delta_u,vel_model,kernel,H,W)
+        v_x,v_y,loss_terms,out = optimize_vel(device,num_years,data,delta_u,vel_model,kernel,H,W)
         final_v = torch.cat([v_x,v_y],dim=1).unsqueeze(dim=0)
         if num == 0:
             Final_v = final_v
@@ -432,7 +446,7 @@ def fit_velocity(time_idx,time_loader,Final_train_data,data_loader,device,num_ye
     if os.path.exists(str(cwd) +"/" + types + "_vel.npy"):
         os.remove(str(cwd) +"/" + types + "_vel.npy")
 
-    np.save(str(cwd) +"/" + types + "_vel.npy",Final_v.detach().numpy())
+    np.save(str(cwd) + f"/initial_velocities/original_vel/original_vel_{seed}/" + types + "_vel.npy",Final_v.detach().numpy())
 
 
 def load_velocity(types):
